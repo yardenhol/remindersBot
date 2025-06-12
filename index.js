@@ -58,6 +58,18 @@ function restoreAllReminders() {
         reminder.timeoutId = setTimeout(() => {
           bot.sendMessage(chatId, `🔔 Reminder: ${reminder.task}`);
 
+          // After reminder, ask for done/remind later
+          bot.sendMessage(chatId, `Did you complete this task?`, {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "✅ Mark as done", callback_data: `done_${reminder.task}` },
+                  { text: "⏰ Remind me later", callback_data: `remind_later_${reminder.task}` },
+                ],
+              ],
+            },
+          });
+
           if (reminders[chatId]) {
             reminders[chatId] = reminders[chatId].filter((r) => r !== reminder);
             if (reminders[chatId].length === 0) delete reminders[chatId];
@@ -91,6 +103,18 @@ function scheduleReminder(chatId, task, date) {
 
   const timeoutId = setTimeout(() => {
     bot.sendMessage(chatId, `🔔 Reminder: ${task}`);
+
+    // After reminder, ask for done/remind later
+    bot.sendMessage(chatId, `Did you complete this task?`, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "✅ Mark as done", callback_data: `done_${task}` },
+            { text: "⏰ Remind me later", callback_data: `remind_later_${task}` },
+          ],
+        ],
+      },
+    });
 
     if (reminders[chatId]) {
       reminders[chatId] = reminders[chatId].filter(
@@ -198,6 +222,19 @@ bot.on("message", (msg) => {
 
   const state = userState[chatId];
 
+  // Handle unrecognized input gracefully
+  if (
+    state.step !== "awaiting_task" &&
+    state.step !== "awaiting_time" &&
+    !state.step.startsWith("custom_time")
+  ) {
+    bot.sendMessage(
+      chatId,
+      "❓ Sorry, I didn't understand that. You can type 'cancel' to abort the current reminder setup."
+    );
+    return;
+  }
+
   if (state.step === "awaiting_task") {
     state.task = text;
     state.step = "awaiting_time";
@@ -294,6 +331,7 @@ bot.on("callback_query", (query) => {
   const state = userState[chatId];
   const data = query.data;
 
+  // Handle deletion requests
   if (data.startsWith("delete_")) {
     if (!reminders[chatId] || reminders[chatId].length === 0) {
       bot.answerCallbackQuery(query.id, { text: "No reminders to delete." });
@@ -317,6 +355,38 @@ bot.on("callback_query", (query) => {
     return;
   }
 
+  // Handle done/remind later buttons after reminder
+  if (data.startsWith("done_")) {
+    const task = data.slice(5);
+
+    bot.answerCallbackQuery(query.id, { text: `Marked "${task}" as done.` });
+    bot.sendMessage(chatId, `✅ Great! Task "${task}" marked as done.`);
+    return;
+  }
+
+  if (data.startsWith("remind_later_")) {
+    const task = data.slice(13);
+
+    bot.answerCallbackQuery(query.id, { text: `Let's reschedule the reminder for "${task}".` });
+    userState[chatId] = { step: "awaiting_time", task };
+    bot.sendMessage(chatId, `When should I remind you again for "${task}"?`, {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "⏰ 1 hour", callback_data: "1h" },
+            { text: "⏳ 3 hours", callback_data: "3h" },
+          ],
+          [
+            { text: "🌅 Tomorrow at 9AM", callback_data: "tomorrow" },
+            { text: "📅 Enter custom time", callback_data: "custom" },
+          ],
+        ],
+      },
+    });
+    return;
+  }
+
+  // If no active task
   if (
     !state ||
     (state.step !== "awaiting_time" && state.step !== "custom_choice")
@@ -325,6 +395,7 @@ bot.on("callback_query", (query) => {
     return;
   }
 
+  // Handle reminder time selection
   switch (data) {
     case "1h": {
       const remindAt = DateTime.now()
@@ -426,3 +497,19 @@ bot.on("polling_error", (error) => {
     console.error("Polling error:", error);
   }
 });
+
+// Helper: parse full custom date input (YYYY-MM-DD HH:MM)
+function parseCustomDate(input) {
+  input = input.trim();
+
+  // ISO format YYYY-MM-DD HH:MM
+  const isoMatch = input.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})$/);
+  if (isoMatch) {
+    let dt = DateTime.fromISO(
+      `${isoMatch[1]}T${isoMatch[2].padStart(2, "0")}:${isoMatch[3]}`,
+      { zone: "Asia/Jerusalem" },
+    );
+    if (dt.isValid) return dt.toJSDate();
+  }
+  return null;
+}
